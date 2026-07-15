@@ -8,12 +8,6 @@ interface TitleBarProps {
 }
 
 const isMac = navigator.platform.toUpperCase().indexOf("MAC") >= 0;
-// Linux/WebKitGTK 原生支持 -webkit-app-region，但对 drag 区域内的 no-drag 子区域
-// 识别有缺陷：父级标题栏设为 drag 后，右上角窗口控制按钮（关闭/最小化/最大化）
-// 会收不到点击事件（Ubuntu 上表现为点关闭按钮没反应）。因此 Linux 下不使用
-// -webkit-app-region，改为仅依赖 data-tauri-drag-region 实现拖拽（其按 target
-// 命中判断，不会拦截按钮点击）。参考同类 Linux WebKit 适配 isLinuxWebKitImeEnvironment。
-const isLinux = navigator.platform.toUpperCase().indexOf("LINUX") >= 0;
 
 export default function TitleBar({ workspaceName }: TitleBarProps) {
   const { t } = useTranslation("common");
@@ -41,8 +35,7 @@ export default function TitleBar({ workspaceName }: TitleBarProps) {
         borderBottom: "1px solid var(--app-border)",
         backdropFilter: `blur(var(--app-glass-blur))`,
         WebkitBackdropFilter: `blur(var(--app-glass-blur))`,
-        // Linux 下省略 -webkit-app-region（详见文件顶部 isLinux 说明），避免吞掉窗口控制按钮的点击
-        ...(isLinux ? {} : { WebkitAppRegion: "drag" }),
+        WebkitAppRegion: "drag",
       } as React.CSSProperties}
     >
       {/* 顶部高光线 */}
