@@ -26,9 +26,13 @@ use uuid::Uuid;
 
 mod osc_resume_capture;
 mod osc_state_detect;
+mod model_capacity_retry;
 mod shell_integration;
 mod wsl_codex;
 
+use self::model_capacity_retry::{
+    ModelCapacityErrorDetector, ModelCapacityRetryController, MODEL_CAPACITY_RETRY_DELAY,
+};
 use self::wsl_codex::{strip_wsl_proxy_env_vars, windows_path_to_wsl, WSL_PROXY_ENV_KEYS};
 
 fn to_cli_provider(provider: crate::models::provider::Provider) -> CliProvider {
@@ -687,6 +691,8 @@ struct TerminalSession {
     output_buffer: Arc<Mutex<OutputBuffer>>,
     /// attach-existing 时重建屏幕用的原始 VT 缓冲
     replay_buffer: Arc<Mutex<ReplayBuffer>>,
+    /// Claude/Codex model-capacity retry lifecycle controller.
+    model_capacity_retry: Arc<ModelCapacityRetryController>,
 }
 
 /// Orchestrator 连接信息（port + token），启动后注入
@@ -840,6 +846,35 @@ fn write_via_writer_tx(writer_tx: &mpsc::Sender<WriterCommand>, data: Vec<u8>) -
         Ok(Err(error)) => Err(anyhow!(error)),
         Err(mpsc::RecvTimeoutError::Timeout) => Err(anyhow!("Terminal write timed out")),
         Err(mpsc::RecvTimeoutError::Disconnected) => Err(anyhow!("Terminal writer stopped")),
+    }
+}
+
+fn send_model_capacity_retry(
+    controller: &Arc<ModelCapacityRetryController>,
+    input_mutex: &Arc<Mutex<()>>,
+    writer_tx: &mpsc::Sender<WriterCommand>,
+    session_id: &str,
+) -> bool {
+    let _guard = input_mutex
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    if controller.is_cancelled() {
+        return true;
+    }
+
+    match write_via_writer_tx(writer_tx, vec![b'\r']) {
+        Ok(()) => {
+            info!(session_id = %session_id, "Sent model-capacity retry");
+            true
+        }
+        Err(error) => {
+            warn!(
+                session_id = %session_id,
+                error = %error,
+                "Failed to send model-capacity retry"
+            );
+            false
+        }
     }
 }
 
@@ -1085,6 +1120,10 @@ fn append_ssh_session_options(args: &mut Vec<String>) {
         args.push("-o".to_string());
         args.push(option.to_string());
     }
+}
+
+fn supports_model_capacity_retry(cli_tool: CliTool) -> bool {
+    matches!(cli_tool, CliTool::Claude | CliTool::Codex)
 }
 
 impl TerminalService {
@@ -1373,6 +1412,7 @@ impl TerminalService {
         // resume 场景 claude 复用原 id，无需发号；其他 CLI 走各自的捕获通道。
         let issued_session_id = (cli_tool == CliTool::Claude && resume_id.is_none())
             .then(|| Uuid::new_v4().to_string());
+        let model_capacity_retry_enabled = supports_model_capacity_retry(cli_tool);
 
         // 注入终端环境变量（macOS Release .app 从 Finder 启动时不继承终端环境）
         env_vars
@@ -1853,6 +1893,18 @@ impl TerminalService {
             );
         }
 
+        let model_capacity_retry_input_mutex = if model_capacity_retry_enabled {
+            match self.input_mutex_for_session(&session_id) {
+                Ok(mutex) => Some(mutex),
+                Err(error) => {
+                    let _ = spawn_result.process.kill();
+                    return Err(anyhow!(error.to_string()));
+                }
+            }
+        } else {
+            None
+        };
+
         let mut reader = spawn_result.reader;
         let writer = spawn_result.writer;
         let process = spawn_result.process;
@@ -1864,6 +1916,7 @@ impl TerminalService {
         let exit_code = Arc::new(Mutex::new(None));
         let last_output_at = Arc::new(Mutex::new(Instant::now()));
         let cancelled = Arc::new(AtomicBool::new(false));
+        let model_capacity_retry = ModelCapacityRetryController::new();
         let output_buffer = Arc::new(Mutex::new(OutputBuffer::new(
             LIVE_OUTPUT_MAX_LINES,
             LIVE_OUTPUT_MAX_BYTES,
@@ -1902,6 +1955,7 @@ impl TerminalService {
                     cancelled: cancelled.clone(),
                     output_buffer: output_buffer.clone(),
                     replay_buffer: replay_buffer.clone(),
+                    model_capacity_retry: model_capacity_retry.clone(),
                 },
             );
         }
@@ -2006,6 +2060,8 @@ impl TerminalService {
         let read_replay_buffer = replay_buffer.clone();
         let reader_pid = session_pid;
         let read_ssh_auth_runtime = ssh_auth_runtime.clone();
+        let read_model_capacity_retry = model_capacity_retry.clone();
+        let read_model_capacity_retry_input_mutex = model_capacity_retry_input_mutex.clone();
         // 阶段 2.8：把状态机引用 clone 进 read 线程，用于"ANSI 推断降级"判定
         let read_state_machine = self
             .state_machine
@@ -2025,6 +2081,7 @@ impl TerminalService {
             #[cfg(windows)]
             let mut sanitize_state = WindowsOutputSanitizeState::default();
             let mut osc_detector = osc_state_detect::OscStateDetector::new();
+            let mut model_capacity_error_detector = ModelCapacityErrorDetector::default();
             loop {
                 if read_cancelled.load(Ordering::Relaxed) {
                     break;
@@ -2095,6 +2152,36 @@ impl TerminalService {
                         // 再次检查取消标志，避免 emit 已死 session 的事件
                         if read_cancelled.load(Ordering::Relaxed) {
                             break;
+                        }
+
+                        if model_capacity_retry_enabled
+                            && model_capacity_error_detector.observe(&data)
+                        {
+                            if let Some(retry_input_mutex) =
+                                read_model_capacity_retry_input_mutex.as_ref().cloned()
+                            {
+                                let retry_controller = read_model_capacity_retry.clone();
+                                let retry_controller_for_task = retry_controller.clone();
+                                let retry_writer_tx = read_writer_tx.clone();
+                                let retry_session_id = sid.clone();
+                                if retry_controller.schedule(
+                                    MODEL_CAPACITY_RETRY_DELAY,
+                                    move || {
+                                        send_model_capacity_retry(
+                                            &retry_controller_for_task,
+                                            &retry_input_mutex,
+                                            &retry_writer_tx,
+                                            &retry_session_id,
+                                        )
+                                    },
+                                ) {
+                                    info!(
+                                        session_id = %sid,
+                                        delay_seconds = MODEL_CAPACITY_RETRY_DELAY.as_secs(),
+                                        "Scheduled model-capacity retry"
+                                    );
+                                }
+                            }
                         }
 
                         // Codex OSC 标题捕获（done 后仅一次原子读，开销可忽略）
@@ -2266,6 +2353,7 @@ impl TerminalService {
         let wait_resume_diag = resume_diag;
         let wait_output_buffer = output_buffer.clone();
         let wait_exit_code = exit_code.clone();
+        let wait_model_capacity_retry = model_capacity_retry.clone();
         let wait_spawned_at = Instant::now();
         let wait_state_machine = self
             .state_machine
@@ -2283,6 +2371,7 @@ impl TerminalService {
                 }
                 Err(_) => -1,
             };
+            wait_model_capacity_retry.cancel();
             if let Ok(mut stored_exit_code) = wait_exit_code.lock() {
                 *stored_exit_code = Some(process_exit_code);
             }
@@ -2659,6 +2748,7 @@ impl TerminalService {
         }
 
         if let Some(session) = session {
+            session.model_capacity_retry.cancel();
             // 保存 output_buffer 到 dead_buffers，供事后读取
             // 保留足够输出供用户在关闭/断连后短时间回看。
             if let Ok(mut buf) = session.output_buffer.lock() {
@@ -2745,7 +2835,11 @@ impl TerminalService {
     pub fn cleanup_all(&self) {
         if let Ok(mut sessions) = self.sessions.lock() {
             let count = sessions.len();
-            for (_, session) in sessions.drain() {
+            for (session_id, session) in sessions.drain() {
+                session.model_capacity_retry.cancel();
+                if let Ok(mut input_mutexes) = self.input_mutexes.lock() {
+                    input_mutexes.remove(&session_id);
+                }
                 // 先设置取消标志，通知 reader 线程停止（与 kill() 保持一致）
                 session.cancelled.store(true, Ordering::Relaxed);
                 {
@@ -3279,6 +3373,14 @@ mod tests {
         );
     }
 
+    #[test]
+    fn model_capacity_retry_is_limited_to_claude_and_codex() {
+        assert!(supports_model_capacity_retry(CliTool::Claude));
+        assert!(supports_model_capacity_retry(CliTool::Codex));
+        assert!(!supports_model_capacity_retry(CliTool::None));
+        assert!(!supports_model_capacity_retry(CliTool::Gemini));
+    }
+
     struct FakePtyProcess;
 
     impl PtyProcess for FakePtyProcess {
@@ -3389,8 +3491,38 @@ mod tests {
                     cancelled: Arc::new(AtomicBool::new(false)),
                     output_buffer: Arc::new(Mutex::new(OutputBuffer::new(10, 1024))),
                     replay_buffer: Arc::new(Mutex::new(ReplayBuffer::new(1024))),
+                    model_capacity_retry: ModelCapacityRetryController::new(),
                 },
             );
+    }
+
+    #[test]
+    fn model_capacity_retry_writes_a_bare_carriage_return() {
+        let writes = Arc::new(Mutex::new(Vec::new()));
+        let writer_tx = spawn_terminal_writer(
+            "retry-session".to_string(),
+            Box::new(RecordingWriter {
+                writes: writes.clone(),
+            }),
+        );
+        let controller = ModelCapacityRetryController::new();
+        let input_mutex = Arc::new(Mutex::new(()));
+
+        assert!(send_model_capacity_retry(
+            &controller,
+            &input_mutex,
+            &writer_tx,
+            "retry-session"
+        ));
+        assert_eq!(
+            writes
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .as_slice(),
+            ["\r"]
+        );
+        controller.cancel();
+        drop(writer_tx);
     }
 
     #[test]
