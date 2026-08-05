@@ -24,9 +24,9 @@ use std::time::{Duration, Instant};
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
+mod model_capacity_retry;
 mod osc_resume_capture;
 mod osc_state_detect;
-mod model_capacity_retry;
 mod shell_integration;
 mod wsl_codex;
 

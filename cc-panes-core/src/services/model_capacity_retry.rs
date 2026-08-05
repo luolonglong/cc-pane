@@ -123,9 +123,7 @@ mod tests {
         assert!(detector.observe(MODEL_CAPACITY_ERROR));
 
         let mut near_miss = ModelCapacityErrorDetector::default();
-        assert!(!near_miss.observe(
-            "Selected model is at capacity. Please try another model."
-        ));
+        assert!(!near_miss.observe("Selected model is at capacity. Please try another model."));
     }
 
     #[test]
