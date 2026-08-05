@@ -868,6 +868,7 @@ fn send_model_capacity_retry(
             true
         }
         Err(error) => {
+            controller.cancel();
             warn!(
                 session_id = %session_id,
                 error = %error,
@@ -3419,6 +3420,18 @@ mod tests {
         }
     }
 
+    struct FailingWriter;
+
+    impl Write for FailingWriter {
+        fn write(&mut self, _buf: &[u8]) -> io::Result<usize> {
+            Err(io::Error::new(io::ErrorKind::BrokenPipe, "writer failed"))
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
     fn terminal_service_for_test() -> (Arc<TerminalService>, tempfile::TempDir) {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let app_paths = Arc::new(AppPaths::new(Some(
@@ -3523,6 +3536,36 @@ mod tests {
         );
         controller.cancel();
         drop(writer_tx);
+    }
+
+    #[test]
+    fn model_capacity_retry_cancels_after_writer_failure() {
+        let writer_tx = spawn_terminal_writer(
+            "retry-session".to_string(),
+            Box::new(FailingWriter),
+        );
+        let controller = ModelCapacityRetryController::new();
+        let input_mutex = Arc::new(Mutex::new(()));
+        let retry_controller = controller.clone();
+
+        assert!(controller.schedule(Duration::ZERO, move || {
+            send_model_capacity_retry(
+                &retry_controller,
+                &input_mutex,
+                &writer_tx,
+                "retry-session",
+            )
+        }));
+
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while !controller.is_cancelled() {
+            assert!(
+                Instant::now() < deadline,
+                "writer failure did not cancel model-capacity retry"
+            );
+            thread::yield_now();
+        }
+        assert!(!controller.schedule(Duration::ZERO, || true));
     }
 
     #[test]

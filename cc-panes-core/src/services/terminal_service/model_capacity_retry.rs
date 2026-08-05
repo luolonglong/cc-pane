@@ -85,12 +85,14 @@ impl ModelCapacityRetryController {
                 state.pending = false;
                 return;
             }
-            state.pending = false;
             drop(state);
 
-            if !controller.is_cancelled() && !retry() {
-                controller.cancel();
-            }
+            let retry_succeeded = if controller.is_cancelled() {
+                true
+            } else {
+                retry()
+            };
+            controller.finish(retry_succeeded);
         });
         true
     }
@@ -104,6 +106,15 @@ impl ModelCapacityRetryController {
 
     pub(crate) fn is_cancelled(&self) -> bool {
         self.lock_state().cancelled
+    }
+
+    fn finish(&self, retry_succeeded: bool) {
+        let mut state = self.lock_state();
+        state.pending = false;
+        if !retry_succeeded {
+            state.cancelled = true;
+            self.wake.notify_all();
+        }
     }
 
     fn lock_state(&self) -> MutexGuard<'_, RetryState> {
@@ -137,33 +148,45 @@ mod tests {
     #[test]
     fn controller_deduplicates_pending_retry_and_rearms_after_write() {
         let controller = ModelCapacityRetryController::new();
-        let (tx, rx) = mpsc::channel();
-
-        assert!(controller.schedule(Duration::from_millis(20), {
-            let tx = tx.clone();
-            move || {
-                tx.send(()).expect("first retry");
-                true
-            }
-        }));
-        assert!(!controller.schedule(Duration::from_millis(20), {
-            let tx = tx.clone();
-            move || {
-                tx.send(()).expect("duplicate retry");
-                true
-            }
-        }));
-        rx.recv_timeout(Duration::from_secs(1))
-            .expect("scheduled retry");
+        let (started_tx, started_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let (rearmed_tx, rearmed_rx) = mpsc::channel();
 
         assert!(controller.schedule(Duration::ZERO, {
-            let tx = tx.clone();
+            let started_tx = started_tx.clone();
             move || {
-                tx.send(()).expect("rearmed retry");
+                started_tx.send(()).expect("first retry started");
+                release_rx.recv().expect("release first retry");
                 true
             }
         }));
-        rx.recv_timeout(Duration::from_secs(1))
+        started_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("scheduled retry");
+        assert!(!controller.schedule(Duration::ZERO, || {
+            panic!("duplicate retry should not run")
+        }));
+
+        release_tx.send(()).expect("release first retry");
+        let deadline = std::time::Instant::now() + Duration::from_secs(1);
+        loop {
+            if controller.schedule(Duration::ZERO, {
+                let rearmed_tx = rearmed_tx.clone();
+                move || {
+                    rearmed_tx.send(()).expect("rearmed retry");
+                    true
+                }
+            }) {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "retry controller did not rearm"
+            );
+            thread::yield_now();
+        }
+        rearmed_rx
+            .recv_timeout(Duration::from_secs(1))
             .expect("rearmed scheduled retry");
         controller.cancel();
     }
