@@ -3540,21 +3540,13 @@ mod tests {
 
     #[test]
     fn model_capacity_retry_cancels_after_writer_failure() {
-        let writer_tx = spawn_terminal_writer(
-            "retry-session".to_string(),
-            Box::new(FailingWriter),
-        );
+        let writer_tx = spawn_terminal_writer("retry-session".to_string(), Box::new(FailingWriter));
         let controller = ModelCapacityRetryController::new();
         let input_mutex = Arc::new(Mutex::new(()));
         let retry_controller = controller.clone();
 
         assert!(controller.schedule(Duration::ZERO, move || {
-            send_model_capacity_retry(
-                &retry_controller,
-                &input_mutex,
-                &writer_tx,
-                "retry-session",
-            )
+            send_model_capacity_retry(&retry_controller, &input_mutex, &writer_tx, "retry-session")
         }));
 
         let deadline = Instant::now() + Duration::from_secs(1);
