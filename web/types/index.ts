@@ -21,6 +21,7 @@ export type {
   TerminalPaneNode,
   TerminalPaneLeaf,
   TerminalPaneSplit,
+  TerminalRestoreState,
   OpenTerminalOptions,
   Tab,
   TerminalSession,

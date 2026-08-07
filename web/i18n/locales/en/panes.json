@@ -9,6 +9,8 @@
   "restoreQueuedHint": "Waiting for another terminal to finish launching...",
   "restoreFailed": "Restore failed",
   "restoreFailedHint": "Check the terminal output for details",
+  "restoreBlockedMissingResumeId": "Session needs verification",
+  "restoreBlockedMissingResumeIdHint": "Bind a verified session before resuming",
   "waitingToRestore": "Waiting to restore",
   "waitingToRestoreHint": "Select this tab to start its saved session",
   "backToTerminal": "Back to Terminal",

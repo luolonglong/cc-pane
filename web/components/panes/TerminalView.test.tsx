@@ -303,6 +303,56 @@ describe("TerminalView", () => {
     expect(term.writtenLines).toContain("old line 2");
   });
 
+  it("passes a stored resume id to an agent restore request", async () => {
+    renderTerminalView({
+      restoring: true,
+      savedSessionId: "saved-1",
+      cliTool: "codex",
+      resumeId: "resume-verified",
+    });
+
+    await waitFor(() => expect(createSession).toHaveBeenCalledTimes(1));
+    expect(createSession).toHaveBeenCalledWith(expect.objectContaining({
+      cliTool: "codex",
+      resumeId: "resume-verified",
+    }));
+  });
+
+  it("does not create an agent session for a restored tab without a resume id", async () => {
+    const onRestoreLaunchState = vi.fn();
+    renderTerminalView({
+      restoring: true,
+      savedSessionId: "saved-1",
+      cliTool: "codex",
+      onRestoreLaunchState,
+    });
+
+    await waitFor(() =>
+      expect(onRestoreLaunchState).toHaveBeenCalledWith("blocked-missing-resume-id"),
+    );
+    expect(createSession).not.toHaveBeenCalled();
+  });
+
+  it("keeps explicitly fresh agent tabs and restored shell tabs launchable", async () => {
+    const fresh = renderTerminalView({
+      restoring: true,
+      savedSessionId: "saved-fresh",
+      cliTool: "codex",
+      resumeId: "new",
+    });
+
+    await waitFor(() => expect(createSession).toHaveBeenCalledTimes(1));
+    expect(createSession).toHaveBeenLastCalledWith(expect.objectContaining({ resumeId: undefined }));
+    fresh.unmount();
+    vi.clearAllMocks();
+    createSession.mockResolvedValue("new-session-2" as never);
+
+    renderTerminalView({ restoring: true, savedSessionId: "saved-shell", cliTool: "none" });
+
+    await waitFor(() => expect(createSession).toHaveBeenCalledTimes(1));
+    expect(createSession).toHaveBeenLastCalledWith(expect.objectContaining({ cliTool: "none" }));
+  });
+
   it("reattaches to a still-live saved session instead of relaunching", async () => {
     useTerminalStatusStore.setState({
       statusMap: new Map([["saved-live", { status: "running" }]]),

@@ -1,4 +1,9 @@
-export type RestoreLaunchState = "idle" | "queued" | "launching" | "failed";
+export type RestoreLaunchState =
+  | "idle"
+  | "queued"
+  | "launching"
+  | "failed"
+  | "blocked-missing-resume-id";
 
 const DEFAULT_MAX_RESTORE_LAUNCHES = 3;
 const RESTORE_LAUNCH_CANCELLED = "cc-panes.restore-launch-cancelled";
