@@ -63,18 +63,22 @@ export default memo(function TerminalTabContent({
       const leaf = node;
       const showPlaceholder = !leaf.sessionId && !leaf.restoring;
       const showRestorePlaceholder = !leaf.sessionId && !!leaf.restoring;
-      const restoreLaunchState = restoreLaunchStates[leaf.id];
+      const restoreLaunchState = leaf.restoreState ?? restoreLaunchStates[leaf.id];
       const isLaunching = showPlaceholder && hasProjectPath;
-      const restoreTitle = restoreLaunchState === "queued"
-        ? t("restoreQueued")
-        : restoreLaunchState === "failed"
-          ? t("restoreFailed")
-          : t("restoringTerminal");
-      const restoreHint = restoreLaunchState === "queued"
-        ? t("restoreQueuedHint")
-        : restoreLaunchState === "failed"
-          ? t("restoreFailedHint")
-          : t("restoringTerminalHint");
+      const restoreTitle = restoreLaunchState === "blocked-missing-resume-id"
+        ? t("restoreBlockedMissingResumeId")
+        : restoreLaunchState === "queued"
+          ? t("restoreQueued")
+          : restoreLaunchState === "failed"
+            ? t("restoreFailed")
+            : t("restoringTerminal");
+      const restoreHint = restoreLaunchState === "blocked-missing-resume-id"
+        ? t("restoreBlockedMissingResumeIdHint")
+        : restoreLaunchState === "queued"
+          ? t("restoreQueuedHint")
+          : restoreLaunchState === "failed"
+            ? t("restoreFailedHint")
+            : t("restoringTerminalHint");
       return (
         <div
           key={leaf.id}
@@ -82,6 +86,9 @@ export default memo(function TerminalTabContent({
           onMouseDown={() => setActiveTerminalPane(tab.id, leaf.id)}
         >
           <TerminalView
+            key={leaf.restoreState === "blocked-missing-resume-id"
+              ? `${leaf.id}:${leaf.restoreState}:${leaf.resumeId ?? "unbound"}`
+              : leaf.id}
             ref={(ref) => onTerminalRef(leaf.id, ref)}
             sessionId={leaf.sessionId}
             projectId={tab.projectId}

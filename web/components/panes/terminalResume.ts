@@ -9,5 +9,27 @@
  * 必须改这里，并会被 terminalResume.test.ts 的回归断言拦下。
  */
 export function pickCreateSessionResumeId(props: { resumeId?: string }): string | undefined {
-  return props.resumeId;
+  return props.resumeId === "new" ? undefined : props.resumeId;
+}
+
+/**
+ * A saved PTY without a resume id cannot safely become a new agent conversation.
+ * The explicit "new" sentinel and plain shell tabs remain intentional fresh starts.
+ */
+export function shouldBlockMissingResumeIdRestore(props: {
+  restoring?: boolean;
+  savedSessionId?: string;
+  launchClaude?: boolean;
+  cliTool?: string;
+  resumeId?: string;
+}): boolean {
+  const isAgentTab = props.launchClaude === true || Boolean(props.cliTool && props.cliTool !== "none");
+  const hasTrustedResumeId = Boolean(props.resumeId && props.resumeId !== "new");
+  return Boolean(
+    props.restoring
+      && props.savedSessionId
+      && isAgentTab
+      && !hasTrustedResumeId
+      && props.resumeId !== "new",
+  );
 }

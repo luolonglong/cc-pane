@@ -20,6 +20,7 @@ import type {
   TerminalPaneNode,
   TerminalPaneLeaf,
   TerminalPaneSplit,
+  TerminalRestoreState,
   TerminalStatusInfo,
   LayoutSnapshotPayload,
 } from "@/types";
@@ -161,6 +162,7 @@ function cloneTerminalLeaf(source: TerminalPaneLeaf): TerminalPaneLeaf {
     disconnected: false,
     restoring: false,
     savedSessionId: undefined,
+    restoreState: undefined,
   };
 }
 
@@ -222,6 +224,7 @@ function syncTabTerminalState(tab: Tab): void {
       disconnected: tab.disconnected,
       restoring: tab.restoring,
       savedSessionId: tab.savedSessionId,
+      restoreState: tab.restoreState,
     };
     tab.terminalRootPane = fallbackLeaf;
     tab.activeTerminalPaneId = fallbackLeaf.id;
@@ -253,6 +256,7 @@ function syncTabTerminalState(tab: Tab): void {
   tab.disconnected = activeLeaf.disconnected;
   tab.restoring = activeLeaf.restoring;
   tab.savedSessionId = activeLeaf.savedSessionId;
+  tab.restoreState = activeLeaf.restoreState;
 }
 
 function findTabLocation(rootPane: PaneNode, tabId: string): { panel: Panel; tab: Tab } | null {
@@ -839,6 +843,8 @@ interface PanesState {
   updateTabAgentResumeId: (ptySessionId: string, agentResumeId: string, resumeIdSource?: string) => boolean;
   /** 手动绑定/换绑某个 tab 的会话 resume id（SessionBindDialog 用，source=manual） */
   setTabResumeBinding: (tabId: string, resumeId: string | undefined, resumeIdSource?: string) => void;
+  /** Mark a restored terminal as blocked until a user verifies its resume id. */
+  setTerminalRestoreState: (tabId: string, terminalPaneId: string, restoreState?: TerminalRestoreState) => void;
   /** @deprecated Use updateTabAgentResumeId; kept for persisted callers and older UI code. */
   updateTabClaudeSession: (ptySessionId: string, claudeSessionId: string) => void;
   setTabDisconnected: (paneId: string, tabId: string, disconnected: boolean, terminalPaneId?: string) => void;
@@ -876,9 +882,6 @@ function cleanRehydratedPanes(node: PaneNode) {
             leaf.restoring = true;
           }
           leaf.sessionId = null;
-          if (leaf.resumeId === "new") {
-            leaf.resumeId = undefined;
-          }
         }
         syncTabTerminalState(tab);
       }
@@ -1830,12 +1833,26 @@ export const usePanesStore = create<PanesState>()(
           if (activeLeaf) {
             activeLeaf.resumeId = resumeId;
             activeLeaf.resumeIdSource = resumeId ? resumeIdSource : undefined;
+            if (resumeId) activeLeaf.restoreState = undefined;
           }
           syncTabTerminalState(tab);
         } else {
           tab.resumeId = resumeId;
           tab.resumeIdSource = resumeId ? resumeIdSource : undefined;
+          if (resumeId) tab.restoreState = undefined;
         }
+      });
+    },
+
+    setTerminalRestoreState: (tabId, terminalPaneId, restoreState) => {
+      set((state) => {
+        const location = findTabAcrossLayouts(state, tabId);
+        const tab = location?.tab;
+        if (!tab || tab.contentType !== "terminal" || !tab.terminalRootPane) return;
+        const leaf = findTerminalPane(tab.terminalRootPane, terminalPaneId);
+        if (leaf?.type !== "leaf" || leaf.restoreState === restoreState) return;
+        leaf.restoreState = restoreState;
+        syncTabTerminalState(tab);
       });
     },
 
@@ -2375,6 +2392,7 @@ export const usePanesStore = create<PanesState>()(
                 leaf.sessionId = savedSessionId;
                 leaf.restoring = false;
                 leaf.savedSessionId = undefined;
+                leaf.restoreState = undefined;
                 changed = true;
                 restored += 1;
               }
@@ -2431,11 +2449,13 @@ export const usePanesStore = create<PanesState>()(
             if (leaf?.type === "leaf") {
               leaf.restoring = false;
               leaf.savedSessionId = undefined;
+              leaf.restoreState = undefined;
             }
             syncTabTerminalState(tab);
           } else {
             tab.restoring = false;
             tab.savedSessionId = undefined;
+            tab.restoreState = undefined;
           }
         }
       });

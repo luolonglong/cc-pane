@@ -9,6 +9,8 @@
   "restoreQueuedHint": "等待其他终端完成启动...",
   "restoreFailed": "恢复失败",
   "restoreFailedHint": "查看终端输出获取详情",
+  "restoreBlockedMissingResumeId": "会话需要确认",
+  "restoreBlockedMissingResumeIdHint": "绑定已确认的会话后再恢复",
   "waitingToRestore": "等待恢复",
   "waitingToRestoreHint": "切换到此标签后启动保存的会话",
   "backToTerminal": "返回终端",

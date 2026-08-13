@@ -664,7 +664,11 @@ describe("usePanesStore layouts", () => {
     expect(merged.currentLayoutId).toBe(mergedNormalLayouts[0].id);
     expect(merged.rootPane).toBe(mergedNormalLayouts[0].rootPane);
 
-    const rootPane = createPanel(makeTerminalTab("persisted-tab", "old-session"));
+    const persistedTab = makeTerminalTab("persisted-tab", "old-session");
+    const persistedLeaf = persistedTab.terminalRootPane as TerminalPaneLeaf;
+    persistedTab.resumeId = "new";
+    persistedLeaf.resumeId = "new";
+    const rootPane = createPanel(persistedTab);
     const restored = usePanesStore.persist.getOptions().merge?.(
       {
         layouts: [{
@@ -683,6 +687,7 @@ describe("usePanesStore layouts", () => {
     expect(restoredLeaf.sessionId).toBeNull();
     expect(restoredLeaf.savedSessionId).toBe("old-session");
     expect(restoredLeaf.restoring).toBe(true);
+    expect(restoredLeaf.resumeId).toBe("new");
   });
 
   it("当前布局回写 action 修改工作副本而不是隐藏 layout 树", () => {

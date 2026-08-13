@@ -111,6 +111,24 @@ describe("TerminalTabContent", () => {
     expect(screen.getByText("正在启动保存的终端会话...")).toBeVisible();
   });
 
+  it("shows the explicit blocked state without discarding the restored terminal", () => {
+    renderTerminalTabContent(
+      createTerminalTab({
+        terminalRootPane: {
+          type: "leaf",
+          id: "leaf-1",
+          sessionId: null,
+          restoring: true,
+          savedSessionId: "saved-1",
+          restoreState: "blocked-missing-resume-id",
+        },
+      }),
+    );
+
+    expect(screen.getByText("会话需要确认")).toBeVisible();
+    expect(screen.getByText("绑定已确认的会话后再恢复")).toBeVisible();
+  });
+
   it("shows queued restore state reported by the terminal view", () => {
     renderTerminalTabContent(
       createTerminalTab({

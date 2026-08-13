@@ -11,7 +11,7 @@ import { terminalService, historyService, sessionRestoreService } from "@/servic
 import { ensureListeners } from "@/services/terminalService";
 import { isTauriRuntime } from "@/services/runtime";
 import { getErrorMessage } from "@/utils";
-import { pickCreateSessionResumeId } from "./terminalResume";
+import { pickCreateSessionResumeId, shouldBlockMissingResumeIdRestore } from "./terminalResume";
 import { devDebugLog } from "@/utils/devLogger";
 import { TERMINAL_APP_MENU_PASTE_EVENT } from "@/utils/appMenuPaste";
 import {
@@ -410,6 +410,29 @@ const TerminalView = forwardRef<TerminalViewHandle, TerminalViewProps>(
       ).catch(() => {});
       // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [props.tabId, props.paneId, props.projectPath, props.layoutActive, props.restoring]);
+
+    const blockMissingResumeIdRestore = useCallback((phase: "init" | "activation") => {
+      const restoreState = "blocked-missing-resume-id" as const;
+      if (props.tabId && props.paneId) {
+        usePanesStore.getState().setTerminalRestoreState(props.tabId, props.paneId, restoreState);
+      }
+      props.onRestoreLaunchState?.(restoreState);
+      const report = {
+        state: restoreState,
+        phase,
+        tabId: props.tabId ?? null,
+        paneId: props.paneId ?? null,
+        launchId: props.projectId,
+        savedPtySessionId: props.savedSessionId ?? null,
+        cliTool: resolveCliTool(props.cliTool, props.launchClaude),
+        runtime: resolveRuntimeKind(props.ssh, props.wsl),
+        wslDistro: props.wsl?.distro ?? null,
+        project: props.projectPath.split(/[/\\]/).pop() ?? props.projectPath,
+      };
+      void logInfo(`[restore-report] ${JSON.stringify(report)}`).catch(() => {});
+      logRestoreEvent("blocked-missing-resume-id", report);
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [props.tabId, props.paneId, props.projectId, props.savedSessionId, props.cliTool, props.launchClaude, props.ssh, props.wsl, props.projectPath, props.onRestoreLaunchState, logRestoreEvent]);
 
     const onSessionCreatedRef = useRef(props.onSessionCreated);
     const onSessionExitedRef = useRef(props.onSessionExited);
@@ -1526,6 +1549,11 @@ const TerminalView = forwardRef<TerminalViewHandle, TerminalViewProps>(
                 });
               }
             } else {
+              if (shouldBlockMissingResumeIdRestore(props)) {
+                blockMissingResumeIdRestore("init");
+                return;
+              }
+
               if (props.layoutActive === false) {
                 deferredRestoreRef.current = true;
                 props.onRestoreLaunchState?.(props.restoring ? "queued" : "idle");
@@ -1874,6 +1902,11 @@ const TerminalView = forwardRef<TerminalViewHandle, TerminalViewProps>(
                   terminalService.detachOutput(liveSavedSessionId);
                   terminalService.detachExit(liveSavedSessionId);
                 }
+                return;
+              }
+
+              if (shouldBlockMissingResumeIdRestore(props)) {
+                blockMissingResumeIdRestore("activation");
                 return;
               }
 

@@ -45,6 +45,9 @@ export interface WslLaunchInfo {
   distro?: string;
 }
 
+/** A terminal recovery state that must survive a restart until the user resolves it. */
+export type TerminalRestoreState = "blocked-missing-resume-id";
+
 export type TerminalPaneNode = TerminalPaneLeaf | TerminalPaneSplit;
 
 export interface TerminalPaneLeaf {
@@ -70,6 +73,7 @@ export interface TerminalPaneLeaf {
   disconnected?: boolean;
   restoring?: boolean;
   savedSessionId?: string;
+  restoreState?: TerminalRestoreState;
 }
 
 export interface TerminalPaneSplit {
@@ -113,6 +117,7 @@ export interface Tab {
   disconnected?: boolean;
   restoring?: boolean;
   savedSessionId?: string;
+  restoreState?: TerminalRestoreState;
   terminalRootPane?: TerminalPaneNode;
   activeTerminalPaneId?: string;
   /**

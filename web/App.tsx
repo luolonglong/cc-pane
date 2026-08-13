@@ -60,6 +60,7 @@ import { useLaunchWarnings } from "@/hooks/useLaunchWarnings";
 import { historyService, terminalService, localHistoryService, checkUpdateSilent, markTabReclaimed as popupMarkReclaimed, getPoppedTabs, sessionRestoreService, layoutSnapshotService, providerService } from "@/services";
 import { terminalRestoreLaunchQueue } from "@/components/panes/terminalRestoreQueue";
 import { waitForTauri } from "@/utils";
+import { applyResumeBindingWithRetry } from "@/utils/resumeBinding";
 import { getCurrentWindowIfTauri, invokeIfTauri, isTauriRuntime, listenIfTauri, listenWebviewIfTauri } from "@/services/runtime";
 import { playNotificationSound } from "@/utils/notificationSound";
 import { findPaneFocusTarget, readPaneFocusRects, type PaneFocusDirection } from "@/utils/paneFocus";
@@ -627,21 +628,14 @@ function MainApp() {
       if (cancelled) return;
       const payload = event.payload ?? {};
       if (payload.ptySessionId && payload.resumeSessionId) {
-        // 绑定事件可能早于 create_terminal 返回（tab.sessionId 尚未写入）到达，
-        // 未命中 tab 时带退避重试，避免 issued/osc-title 绑定丢失
         const { ptySessionId, resumeSessionId, resumeSource } = payload;
-        const applyBinding = (attempt: number) => {
-          if (cancelled) return;
-          const found = usePanesStore.getState().updateTabAgentResumeId(
-            ptySessionId,
-            resumeSessionId,
-            resumeSource,
-          );
-          if (!found && attempt < 6) {
-            setTimeout(() => applyBinding(attempt + 1), 500 * (attempt + 1));
-          }
-        };
-        applyBinding(0);
+        applyResumeBindingWithRetry(
+          usePanesStore.getState(),
+          ptySessionId,
+          resumeSessionId,
+          resumeSource,
+          { isCancelled: () => cancelled },
+        );
       }
       window.dispatchEvent(new CustomEvent("cc-panes:history-updated"));
     }).then((fn) => {
