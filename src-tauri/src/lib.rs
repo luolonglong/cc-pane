@@ -259,6 +259,13 @@ use commands::{
     kill_orphan_processes,
     kill_terminal,
     kill_terminal_idempotent,
+    link_add_workspace,
+    link_annotate_repo,
+    link_disable,
+    link_enable,
+    link_set_workspace,
+    link_snapshot,
+    link_update,
     list_acp_chat_history,
     list_acp_engines,
     list_ai_panel_history,
@@ -541,13 +548,13 @@ use services::{
     PiRpcEventBridge, PiRpcService, PlanArchiveService, PlanService, ProcessMonitorService,
     ProjectCliHooksService, ProjectContextService, ProjectService, ProviderService,
     QuickCommandService, ScreenshotService, SessionIndexService, SessionRestoreService,
-    SettingsService, SharedMcpService, SkillMarketService, SkillService, SpecService,
-    SshCredentialService, SshFileService, SshMachineService, StartLocks, SystemStatsService,
-    TaskBindingService, TaskQueueService, TaskQueueWorker, TerminalBackendKind,
-    TerminalBackendState, TerminalDaemonControlLink, TerminalDaemonEventBridge,
-    TerminalDaemonLifecycle, TerminalService, TodoService, UninstallCleanupService,
-    UsageStatsService, WebAccessLifecycle, WorkspaceService, WorktreeService,
-    COMFY_LOCAL_PROVIDER_ID,
+    SettingsService, SharedMcpService, SkillLinkService, SkillMarketService,
+    SkillRemoteUpdateService, SkillService, SpecService, SshCredentialService, SshFileService,
+    SshMachineService, StartLocks, SystemStatsService, TaskBindingService, TaskQueueService,
+    TaskQueueWorker, TerminalBackendKind, TerminalBackendState, TerminalDaemonControlLink,
+    TerminalDaemonEventBridge, TerminalDaemonLifecycle, TerminalService, TodoService,
+    UninstallCleanupService, UsageStatsService, WebAccessLifecycle, WorkspaceService,
+    WorktreeService, COMFY_LOCAL_PROVIDER_ID,
 };
 use std::sync::Arc;
 use utils::AppPaths;
@@ -1746,6 +1753,13 @@ pub fn run() {
         app_paths.skills_dir(),
         app_paths.user_skills_dir(),
     ));
+    let skill_link_service = Arc::new(SkillLinkService::new(
+        dirs::home_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("."))
+            .join(".skill-manager")
+            .join("config.json"),
+    ));
+    let skill_remote_update_service = Arc::new(SkillRemoteUpdateService::new());
     let plan_service = Arc::new(PlanService::new(
         app_paths.clone(),
         workspace_service.clone(),
@@ -1923,6 +1937,8 @@ pub fn run() {
         .manage(project_skill_service)
         .manage(workspace_skill_service)
         .manage(skill_market_service)
+        .manage(skill_link_service)
+        .manage(skill_remote_update_service)
         .manage(external_skill_registry)
         .manage(plan_service)
         .manage(plan_archive_service)
@@ -3335,6 +3351,13 @@ pub fn run() {
             delete_skill,
             copy_skill,
             list_skill_market_entries,
+            link_add_workspace,
+            link_annotate_repo,
+            link_disable,
+            link_enable,
+            link_set_workspace,
+            link_snapshot,
+            link_update,
             search_skill_market,
             describe_skill_market_entry,
             install_skill_market_entry,

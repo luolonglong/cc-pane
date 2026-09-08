@@ -312,6 +312,8 @@ impl ProviderService {
 
     /// 添加 Provider
     pub fn add_provider(&self, mut provider: Provider) -> Result<()> {
+        // 先刷新文件快照再改写（issue #47：防止过期快照整体覆写他人更新）
+        self.refresh_from_file();
         // `__system__` 是合成「系统环境变量」条目的保留 id，禁止落盘，
         // 否则会与列表顶部的虚拟条目撞 id、且凭证永远被 get_env_vars 短路忽略。
         Self::normalize_provider_models(&mut provider)?;
@@ -343,6 +345,8 @@ impl ProviderService {
     /// 原子去重添加（供一键导入）：在**同一把锁**内检查 name+type+base_url 是否已存在，
     /// 存在则报错、否则插入。避免并发导入「各自 list→都通过→都 insert」堆重复。
     pub fn add_provider_unique(&self, mut provider: Provider) -> Result<()> {
+        // 先刷新文件快照再改写（issue #47：防止过期快照整体覆写他人更新）
+        self.refresh_from_file();
         Self::normalize_provider_models(&mut provider)?;
         Self::validate_provider(&provider)?;
         let mut config = self.config.lock().unwrap_or_else(|e| e.into_inner());
@@ -375,6 +379,8 @@ impl ProviderService {
 
     /// 更新 Provider
     pub fn update_provider(&self, mut provider: Provider) -> Result<()> {
+        // 先刷新文件快照再改写（issue #47：防止过期快照整体覆写他人更新）
+        self.refresh_from_file();
         // 同 add_provider：保留 id 不可写入 providers.json。
         Self::normalize_provider_models(&mut provider)?;
         Self::validate_provider(&provider)?;
@@ -406,6 +412,8 @@ impl ProviderService {
 
     /// 删除 Provider；对应 CLI 回到原生配置，避免静默切换到另一个凭证。
     pub fn remove_provider(&self, id: &str) -> Result<()> {
+        // 先刷新文件快照再改写（issue #47：防止过期快照整体覆写他人更新）
+        self.refresh_from_file();
         let mut config = self.config.lock().unwrap_or_else(|e| e.into_inner());
 
         let mut next = config.clone();
@@ -417,6 +425,8 @@ impl ProviderService {
 
     /// 兼容旧调用：只设置 Provider 的原生 CLI，避免隐式影响其它 CLI。
     pub fn set_default(&self, id: &str) -> Result<()> {
+        // 先刷新文件快照再改写（issue #47：防止过期快照整体覆写他人更新）
+        self.refresh_from_file();
         let mut config = self.config.lock().unwrap_or_else(|e| e.into_inner());
         let is_system = id == SYSTEM_PROVIDER_ID;
         if !is_system && !config.providers.iter().any(|provider| provider.id == id) {
@@ -440,6 +450,8 @@ impl ProviderService {
 
     /// 只设置一个 CLI 工具的默认 Provider，不影响其他 CLI。
     pub fn set_default_for_cli(&self, cli_tool: &str, id: &str) -> Result<()> {
+        // 先刷新文件快照再改写（issue #47：防止过期快照整体覆写他人更新）
+        self.refresh_from_file();
         Self::validate_cli_tool(cli_tool)?;
         let mut config = self.config.lock().unwrap_or_else(|e| e.into_inner());
         if id != SYSTEM_PROVIDER_ID && !config.providers.iter().any(|provider| provider.id == id) {
@@ -754,6 +766,20 @@ impl ProviderService {
                 anyhow::bail!("Provider baseUrl must use http or https");
             }
         }
+        // Codex wire API 覆盖（issue #46）：仅 open_ai 类型可设，取值只能是 responses/chat
+        if let Some(wire_api) = provider
+            .codex_wire_api
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            if provider.provider_type != ProviderType::OpenAI {
+                anyhow::bail!("codexWireApi is only supported for open_ai providers");
+            }
+            if !matches!(wire_api, "responses" | "chat") {
+                anyhow::bail!("codexWireApi must be either 'responses' or 'chat'");
+            }
+        }
         Ok(())
     }
 
@@ -806,6 +832,7 @@ mod tests {
             config_dir: None,
             models: Vec::new(),
             default_model_id: None,
+            codex_wire_api: None,
             is_default,
         }
     }
@@ -823,6 +850,7 @@ mod tests {
             config_dir,
             models: Vec::new(),
             default_model_id: None,
+            codex_wire_api: None,
             is_default: false,
         }
     }
@@ -1214,6 +1242,53 @@ mod tests {
                 .map(String::as_str),
             Some("sk-fresh-provider")
         );
+    }
+
+    #[test]
+    fn stale_writer_refreshes_before_mutating_provider_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("providers.json");
+        let first_writer = ProviderService::new(path.clone());
+        let stale_writer = ProviderService::new(path.clone());
+
+        first_writer
+            .add_provider(make_provider("from-first", false))
+            .unwrap();
+        stale_writer
+            .add_provider(make_provider("from-stale", false))
+            .unwrap();
+
+        let reloaded = ProviderService::new(path);
+        assert!(reloaded.get_provider("from-first").is_some());
+        assert!(reloaded.get_provider("from-stale").is_some());
+    }
+
+    #[test]
+    fn validates_codex_wire_api_override() {
+        let dir = tempfile::tempdir().unwrap();
+        let service = new_service(&dir);
+        let mut provider = make_provider("open-ai", false);
+        provider.provider_type = ProviderType::OpenAI;
+        provider.codex_wire_api = Some("chat".to_string());
+
+        service.add_provider(provider).unwrap();
+        assert_eq!(
+            service
+                .get_provider("open-ai")
+                .unwrap()
+                .codex_wire_api
+                .as_deref(),
+            Some("chat")
+        );
+
+        let mut invalid = make_provider("invalid-wire-api", false);
+        invalid.provider_type = ProviderType::OpenAI;
+        invalid.codex_wire_api = Some("completions".to_string());
+        assert!(service.add_provider(invalid).is_err());
+
+        let mut wrong_type = make_provider("wrong-type", false);
+        wrong_type.codex_wire_api = Some("chat".to_string());
+        assert!(service.add_provider(wrong_type).is_err());
     }
 
     fn new_service(dir: &tempfile::TempDir) -> ProviderService {
